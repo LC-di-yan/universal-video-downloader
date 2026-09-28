@@ -8,7 +8,7 @@ AI 总结功能由三个子系统构成：
 |:-:|:-----|:------|
 | 1 | **SubtitleExtractor** | 从视频 URL 提取字幕文本 |
 | 2 | **VideoSummarizer** | 调用 DeepSeek API 生成总结/导图/问答 |
-| 3 | **SSE Stream** | FastAPI `EventSourceResponse` 实时推送 |
+| 3 | **SSE Stream** | Flask `Response`（mimetype=`text/event-stream`）实时推送 |
 
 **整体数据流：**
 
@@ -194,9 +194,9 @@ self.model = "deepseek-chat"
 
 ## <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><activity/></svg> 三、SSE 流式传输
 
-### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><server/></svg> 后端（FastAPI）
+### <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#06b6d4" stroke-width="2" style="vertical-align:middle"><server/></svg> 后端（Flask）
 
-**<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><link/></svg> 端点：** `POST /api/summarize` → `EventSourceResponse`
+**<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#6b7280" stroke-width="2" style="vertical-align:middle"><link/></svg> 端点：** `POST /api/summarize` → `Response(mimetype="text/event-stream")`
 
 **事件顺序：**
 

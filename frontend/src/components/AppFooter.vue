@@ -18,7 +18,7 @@
           </div>
         </div>
         <p class="text-sm text-gray-500 max-w-md leading-relaxed">
-          AI 万能视频下载总结器 — 基于 Vue 3 + FastAPI + yt-dlp + DeepSeek + Stripe 构建
+          AI 万能视频下载总结器 — 基于 Vue 3 + Flask + yt-dlp + DeepSeek + Stripe 构建
         </p>
         <div class="flex items-center gap-4 mt-6">
           <span class="text-xs text-gray-600">© 2026 VidDownAI</span>

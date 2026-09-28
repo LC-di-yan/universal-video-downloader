@@ -16,7 +16,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Vue_3-4FC08D?logo=vuedotgithub&logoColor=white" alt="Vue 3">
-  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Flask-000000?logo=flask&logoColor=white" alt="Flask">
   <img src="https://img.shields.io/badge/yt--dlp-1800+-blue" alt="yt-dlp 1800+">
   <img src="https://img.shields.io/badge/DeepSeek-AI-8b5cf6" alt="DeepSeek AI">
   <img src="https://img.shields.io/badge/Stripe-Payments-6366f1?logo=stripe&logoColor=white" alt="Stripe">
@@ -180,7 +180,7 @@ VIP 通过 Stripe 安全支付，续期自动叠加。
 | 层 | 技术 | 用途 |
 |:--:|------|------|
 | 前端 | Vue 3 + Vite + TailwindCSS 4 | SPA 框架 |
-| 后端 | FastAPI + Uvicorn | REST API + SSE 流式 |
+| 后端 | Flask | REST API + SSE 流式 |
 | 视频解析 | yt-dlp + 抖音独立模块 | 1800+ 平台 |
 | AI | DeepSeek API (deepseek-chat) | 总结 / 导图 / 问答 |
 | ASR 回退 | OpenAI Whisper API | 语音转文字（需配置） |
@@ -241,5 +241,5 @@ sqlite3 backend/data/app.db "SELECT * FROM orders;"
 ---
 
 <p align="center">
-  <sub>Built with Vue 3 + FastAPI + yt-dlp + DeepSeek + Stripe</sub>
+  <sub>Built with Vue 3 + Flask + yt-dlp + DeepSeek + Stripe</sub>
 </p>

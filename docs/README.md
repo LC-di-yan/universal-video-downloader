@@ -17,7 +17,7 @@
 
 ```
 free-video-downloader/
-├── backend/          # FastAPI 后端
+├── backend/          # Flask 后端
 │   ├── main.py       # 入口 + 路由
 │   ├── downloader.py # yt-dlp 封装
 │   ├── douyin.py     # 抖音解析

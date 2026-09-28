@@ -20,4 +20,4 @@ npm run build      # Production build → dist/
 
 ## Proxy
 
-Vite dev server proxies `/api/*` to `http://localhost:8000` (FastAPI backend).
+Vite dev server proxies `/api/*` to `http://localhost:8000` (Flask backend).
