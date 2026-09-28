@@ -3,17 +3,15 @@ import uuid
 from datetime import datetime, timezone
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from flask import Blueprint, jsonify, request, Response
 
-from auth import get_current_user
+from auth import ApiError, require_auth
 from database import (
     create_order, update_order_stripe_session,
     complete_order, get_user_orders,
 )
 
-router = APIRouter(prefix="/api/payment", tags=["payment"])
+bp = Blueprint("payment", __name__, url_prefix="/api/payment")
 
 PLANS = {
     "monthly": {
@@ -24,8 +22,9 @@ PLANS = {
 }
 
 
-class CreateCheckoutRequest(BaseModel):
-    plan_type: str = "monthly"
+def _json_body() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 def _generate_order_no(user_id: int) -> str:
@@ -36,21 +35,20 @@ def _generate_order_no(user_id: int) -> str:
 
 # ── 创建 Checkout Session ────────────────────────────────
 
-@router.post("/create-checkout")
-async def create_checkout_session(
-    req: CreateCheckoutRequest,
-    user: dict = Depends(get_current_user),
-):
+@bp.post("/create-checkout")
+@require_auth
+def create_checkout_session(user: dict):
     secret_key = os.getenv("STRIPE_SECRET_KEY")
     price_id = os.getenv("STRIPE_PRICE_ID_MONTHLY")
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
     if not secret_key or not price_id:
-        raise HTTPException(status_code=500, detail="支付服务未配置")
+        raise ApiError(500, "支付服务未配置")
 
-    plan = PLANS.get(req.plan_type)
+    plan_type = _json_body().get("plan_type") or "monthly"
+    plan = PLANS.get(plan_type)
     if not plan:
-        raise HTTPException(status_code=400, detail="无效的套餐类型")
+        raise ApiError(400, "无效的套餐类型")
 
     stripe.api_key = secret_key
 
@@ -61,7 +59,7 @@ async def create_checkout_session(
         order_no=order_no,
         amount=plan["amount"],
         currency=plan["currency"],
-        plan_type=req.plan_type,
+        plan_type=plan_type,
     )
 
     # 2. 创建 Stripe Checkout Session
@@ -77,70 +75,83 @@ async def create_checkout_session(
             metadata={
                 "order_no": order_no,
                 "user_id": str(user["id"]),
-                "plan_type": req.plan_type,
+                "plan_type": plan_type,
             },
         )
 
         # 3. 保存 Stripe Session ID
         update_order_stripe_session(order_no, session.id)
 
-        return {
+        return jsonify({
             "success": True,
             "data": {
                 "checkout_url": session.url,
                 "order_no": order_no,
                 "session_id": session.id,
             },
-        }
+        })
 
     except stripe.StripeError as e:
-        raise HTTPException(status_code=400, detail=f"创建支付会话失败: {str(e)}")
+        raise ApiError(400, f"创建支付会话失败: {str(e)}")
 
 
 # ── Webhook 回调处理 ──────────────────────────────────────
 
-@router.post("/webhook")
-async def stripe_webhook(request: Request):
+@bp.post("/webhook")
+def stripe_webhook():
     """
     Stripe Webhook 回调处理。
     幂等性由 complete_order 保证：只有 pending 状态的订单才会被处理。
     """
-    payload = await request.body()
+    payload = request.get_data()
     sig_header = request.headers.get("stripe-signature")
 
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
     if not webhook_secret:
-        return JSONResponse(status_code=400, content={"error": "Webhook secret not configured"})
+        return Response(
+            response='{"error": "Webhook secret not configured"}',
+            status=400,
+            mimetype="application/json",
+        )
 
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
     except ValueError:
-        return JSONResponse(status_code=400, content={"error": "Invalid payload"})
+        return Response(
+            response='{"error": "Invalid payload"}',
+            status=400,
+            mimetype="application/json",
+        )
     except stripe.SignatureVerificationError:
-        return JSONResponse(status_code=400, content={"error": "Invalid signature"})
+        return Response(
+            response='{"error": "Invalid signature"}',
+            status=400,
+            mimetype="application/json",
+        )
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         if session.get("payment_status") == "paid":
             payment_intent_id = session.get("payment_intent", "")
-            result = complete_order(session["id"], payment_intent_id)
+            complete_order(session["id"], payment_intent_id)
 
     elif event["type"] == "checkout.session.async_payment_succeeded":
         session = event["data"]["object"]
         payment_intent_id = session.get("payment_intent", "")
         complete_order(session["id"], payment_intent_id)
 
-    return JSONResponse(status_code=200, content={"received": True})
+    return jsonify({"received": True})
 
 
 # ── 订单历史 ──────────────────────────────────────────────
 
-@router.get("/orders")
-async def list_orders(user: dict = Depends(get_current_user)):
+@bp.get("/orders")
+@require_auth
+def list_orders(user: dict):
     orders = get_user_orders(user["id"])
-    return {
+    return jsonify({
         "success": True,
         "data": orders,
-    }
+    })

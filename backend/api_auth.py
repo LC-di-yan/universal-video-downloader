@@ -1,25 +1,20 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from flask import Blueprint, jsonify
 
 from auth import (
-    create_token, get_current_user, hash_password,
+    ApiError, create_token, hash_password, require_auth,
     validate_email, validate_password, verify_password,
 )
 from database import create_user, get_user_by_email
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+bp = Blueprint("auth", __name__, url_prefix="/api/auth")
 
 
-class RegisterRequest(BaseModel):
-    email: str
-    password: str
-
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
+def _json_body() -> dict:
+    from flask import request
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 def _build_user_response(user: dict) -> dict:
@@ -41,51 +36,57 @@ def _build_user_response(user: dict) -> dict:
     }
 
 
-@router.post("/register")
-async def register(req: RegisterRequest):
-    if not validate_email(req.email):
-        raise HTTPException(status_code=400, detail="邮箱格式不正确")
-    err = validate_password(req.password)
+@bp.post("/register")
+def register():
+    body = _json_body()
+    email = body.get("email", "")
+    password = body.get("password", "")
+
+    if not validate_email(email):
+        raise ApiError(400, "邮箱格式不正确")
+    err = validate_password(password)
     if err:
-        raise HTTPException(status_code=400, detail=err)
-    if get_user_by_email(req.email):
-        raise HTTPException(status_code=400, detail="该邮箱已注册")
+        raise ApiError(400, err)
+    if get_user_by_email(email):
+        raise ApiError(400, "该邮箱已注册")
 
-    hashed = hash_password(req.password)
-    user = create_user(req.email, hashed)
-    token = create_token(user["id"], req.email)
+    hashed = hash_password(password)
+    user = create_user(email, hashed)
+    token = create_token(user["id"], email)
 
-    return {
+    return jsonify({
         "success": True,
         "data": {
             "token": token,
-            "user": {"id": user["id"], "email": req.email, "is_vip": False, "vip_expire_at": None},
+            "user": {"id": user["id"], "email": email, "is_vip": False, "vip_expire_at": None},
         },
-    }
+    })
 
 
-@router.post("/login")
-async def login(req: LoginRequest):
-    user = get_user_by_email(req.email)
+@bp.post("/login")
+def login():
+    body = _json_body()
+    user = get_user_by_email(body.get("email", ""))
     if not user:
-        raise HTTPException(status_code=400, detail="邮箱或密码错误")
+        raise ApiError(400, "邮箱或密码错误")
 
-    if not verify_password(req.password, user["password_hash"]):
-        raise HTTPException(status_code=400, detail="邮箱或密码错误")
+    if not verify_password(body.get("password", ""), user["password_hash"]):
+        raise ApiError(400, "邮箱或密码错误")
 
     token = create_token(user["id"], user["email"])
-    return {
+    return jsonify({
         "success": True,
         "data": {
             "token": token,
             "user": _build_user_response(user),
         },
-    }
+    })
 
 
-@router.get("/me")
-async def get_me(user: dict = Depends(get_current_user)):
-    return {
+@bp.get("/me")
+@require_auth
+def get_me(user: dict):
+    return jsonify({
         "success": True,
         "data": _build_user_response(user),
-    }
+    })

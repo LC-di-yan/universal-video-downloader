@@ -117,9 +117,11 @@ Token 有效期 **72 小时**，过期需重新登录。
 {
   "success": true,
   "data": {
-    "url": "https://checkout.stripe.com/c/pay_xxx"
+    "checkout_url": "https://checkout.stripe.com/c/pay_xxx",
+    "order_no": "SA202601011200000001abcd1234",
+    "session_id": "cs_test_xxx"
   }
 }
 ```
 
-前端应重定向到 `url`，支付完成后自动跳回 `FRONTEND_URL`。
+前端应重定向到 `checkout_url`，支付完成后自动跳回 `FRONTEND_URL`。

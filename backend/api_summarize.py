@@ -1,28 +1,29 @@
 """AI 视频总结相关 API 路由"""
 
-import asyncio
 import json
-from collections.abc import AsyncIterable
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.sse import ServerSentEvent, EventSourceResponse
-from pydantic import BaseModel
+from flask import Blueprint, Response, request, stream_with_context
 
-from auth import get_optional_user
+from auth import optional_auth
 from database import check_and_increment_summary, FREE_DAILY_SUMMARY_LIMIT
 
-router = APIRouter(prefix="/api", tags=["AI 总结"])
+bp = Blueprint("summarize", __name__, url_prefix="/api")
+
+SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
 
 
-class SummarizeRequest(BaseModel):
-    url: str
-    language: str = "zh"
+def _sse(event: str, data, raw: bool = False) -> bytes:
+    """打包一条 SSE 消息：event: <name>\\ndata: <payload>\\n\\n"""
+    payload = data if raw else json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
 
 
-class ChatRequest(BaseModel):
-    url: str
-    question: str
-    subtitle_text: str = ""
+def _json_body() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 def _check_summary_permission(user: dict | None):
@@ -41,10 +42,7 @@ def _get_summarizer():
     """延迟初始化 VideoSummarizer"""
     from summarizer import VideoSummarizer
     if not hasattr(_get_summarizer, "_instance"):
-        try:
-            _get_summarizer._instance = VideoSummarizer()
-        except ValueError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        _get_summarizer._instance = VideoSummarizer()
     return _get_summarizer._instance
 
 
@@ -56,122 +54,105 @@ def _get_extractor():
     return _get_extractor._instance
 
 
-async def _run_in_thread(func, *args):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, func, *args)
-
-
-# ── 流式总结端点 ────────────────────────────────────────
-
-@router.post("/summarize", response_class=EventSourceResponse)
-async def summarize_video(
-    req: SummarizeRequest,
-    user: dict | None = Depends(get_optional_user),
-) -> AsyncIterable[ServerSentEvent]:
+def _summarize_stream(req: dict, user: dict | None):
     """
-    AI 视频总结（SSE 流式）
+    AI 视频总结事件流
     事件顺序：subtitle → summary(流式token) → mindmap → quota → done
     """
     allowed, remaining, message = _check_summary_permission(user)
     if not allowed:
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "message": message,
-                "need_login": user is None,
-                "need_vip": user is not None,
-            }, ensure_ascii=False),
-            event="error",
-        )
+        yield _sse("error", {
+            "message": message,
+            "need_login": user is None,
+            "need_vip": user is not None,
+        })
         return
 
     try:
         extractor = _get_extractor()
-        subtitle_data = await _run_in_thread(extractor.extract, req.url)
+        subtitle_data = extractor.extract(req["url"])
 
-        yield ServerSentEvent(
-            raw_data=json.dumps(subtitle_data, ensure_ascii=False),
-            event="subtitle",
-        )
+        yield _sse("subtitle", subtitle_data)
 
         if not subtitle_data["has_subtitle"]:
-            yield ServerSentEvent(
-                raw_data=json.dumps({"message": "该视频没有可用的字幕，无法生成总结"}, ensure_ascii=False),
-                event="error",
-            )
+            yield _sse("error", {"message": "该视频没有可用的字幕，无法生成总结"})
             return
 
         full_text = subtitle_data["full_text"]
+        language = req.get("language") or "zh"
 
         # 流式生成总结摘要
         summarizer = _get_summarizer()
-        for token in summarizer.summarize_stream(full_text, req.language):
-            yield ServerSentEvent(
-                raw_data=json.dumps(token, ensure_ascii=False),
-                event="summary",
-            )
+        for token in summarizer.summarize_stream(full_text, language):
+            yield _sse("summary", token)
 
         # 生成思维导图（非流式）
-        mindmap_md = await _run_in_thread(summarizer.generate_mindmap, full_text, req.language)
-        yield ServerSentEvent(
-            raw_data=json.dumps({"markdown": mindmap_md}, ensure_ascii=False),
-            event="mindmap",
-        )
+        mindmap_md = summarizer.generate_mindmap(full_text, language)
+        yield _sse("mindmap", {"markdown": mindmap_md})
 
         # 发送剩余次数
-        yield ServerSentEvent(
-            raw_data=json.dumps({
-                "remaining": remaining,
-                "limit": FREE_DAILY_SUMMARY_LIMIT,
-            }, ensure_ascii=False),
-            event="quota",
-        )
+        yield _sse("quota", {
+            "remaining": remaining,
+            "limit": FREE_DAILY_SUMMARY_LIMIT,
+        })
 
-        yield ServerSentEvent(raw_data="[DONE]", event="done")
+        yield _sse("done", "[DONE]", raw=True)
 
-    except HTTPException:
-        raise
     except Exception as e:
-        yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"总结失败: {str(e)}"}, ensure_ascii=False),
-            event="error",
-        )
+        yield _sse("error", {"message": f"总结失败: {str(e)}"})
+
+
+def _chat_stream(req: dict, user: dict | None):
+    """AI 视频问答事件流"""
+    try:
+        subtitle_text = (req.get("subtitle_text") or "").strip()
+        if not subtitle_text:
+            extractor = _get_extractor()
+            subtitle_data = extractor.extract(req["url"])
+            if not subtitle_data["has_subtitle"]:
+                yield _sse("error", {"message": "该视频没有可用的字幕，无法回答问题"})
+                return
+            subtitle_text = subtitle_data["full_text"]
+
+        summarizer = _get_summarizer()
+        for token in summarizer.chat_stream(subtitle_text, req.get("question", "")):
+            yield _sse("answer", token)
+
+        yield _sse("done", "[DONE]", raw=True)
+
+    except Exception as e:
+        yield _sse("error", {"message": f"回答失败: {str(e)}"})
+
+
+# ── 流式总结端点 ────────────────────────────────────────
+
+@bp.post("/summarize")
+@optional_auth
+def summarize_video(user: dict | None):
+    req = {
+        "url": _json_body().get("url", ""),
+        "language": _json_body().get("language") or "zh",
+    }
+    return Response(
+        stream_with_context(_summarize_stream(req, user)),
+        mimetype="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 # ── AI 问答端点 ──────────────────────────────────────────
 
-@router.post("/chat", response_class=EventSourceResponse)
-async def chat_with_video(
-    req: ChatRequest,
-    user: dict | None = Depends(get_optional_user),
-) -> AsyncIterable[ServerSentEvent]:
-    """AI 视频问答（SSE 流式）"""
-    try:
-        if not req.subtitle_text.strip():
-            extractor = _get_extractor()
-            subtitle_data = await _run_in_thread(extractor.extract, req.url)
-            if not subtitle_data["has_subtitle"]:
-                yield ServerSentEvent(
-                    raw_data=json.dumps({"message": "该视频没有可用的字幕，无法回答问题"}, ensure_ascii=False),
-                    event="error",
-                )
-                return
-            subtitle_text = subtitle_data["full_text"]
-        else:
-            subtitle_text = req.subtitle_text
-
-        summarizer = _get_summarizer()
-        for token in summarizer.chat_stream(subtitle_text, req.question):
-            yield ServerSentEvent(
-                raw_data=json.dumps(token, ensure_ascii=False),
-                event="answer",
-            )
-
-        yield ServerSentEvent(raw_data="[DONE]", event="done")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        yield ServerSentEvent(
-            raw_data=json.dumps({"message": f"回答失败: {str(e)}"}, ensure_ascii=False),
-            event="error",
-        )
+@bp.post("/chat")
+@optional_auth
+def chat_with_video(user: dict | None):
+    body = _json_body()
+    req = {
+        "url": body.get("url", ""),
+        "question": body.get("question", ""),
+        "subtitle_text": body.get("subtitle_text", ""),
+    }
+    return Response(
+        stream_with_context(_chat_stream(req, user)),
+        mimetype="text/event-stream",
+        headers=SSE_HEADERS,
+    )
